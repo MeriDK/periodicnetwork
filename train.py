@@ -4,6 +4,7 @@
 
 import os
 import sys
+
 import joblib
 import argparse
 import torch.multiprocessing as mp
@@ -11,6 +12,8 @@ sys.path.append('./')
 
 
 parser = argparse.ArgumentParser(description='')
+parser.add_argument('--data-only', action='store_true', default=False,
+                    help='do not run the training, just save the generated data')
 parser.add_argument('--L', type=int, default=128,
                     help='training sequence length')
 parser.add_argument('--filename', type=str, default='test.pkl',
@@ -202,6 +205,10 @@ for cls in use_label:
     new_data.extend(class_data[:min(len(class_data), args.max_sample)])
 data = new_data
 
+if args.data_only:
+    joblib.dump(data, f'data/{args.filename.split("_")[0]}_filtered.pkl')
+
+
 all_label_string = [lc.label for lc in data]
 unique_label, count = np.unique(all_label_string, return_counts=True)
 print('------------before segmenting into L={}------------'.format(args.L))
@@ -330,6 +337,16 @@ def train_helper(param):
     train_loader = DataLoader(train_dset, batch_size=args.train_batch, shuffle=True, drop_last=True)
     val_loader = DataLoader(val_dset, batch_size=128, shuffle=False, drop_last=False)
 
+    if args.data_only:
+        output = f'data/seeds/{args.filename.split("_")[0]}_{name[-1]}'
+        os.makedirs(output, exist_ok=True)
+        joblib.dump((train_index, test_index), f'{output}/index.pkl')
+        joblib.dump((train_idx, x[train_idx], aux[train_idx], label[train_idx]),
+                    f'{output}/train.pkl')
+        joblib.dump((val_idx, x[val_idx], aux[val_idx], label[val_idx]),
+                    f'{output}/val.pkl')
+        np.save(f'{output}/scales.npy', scales_all)
+
     split = [chunk for i in test_index for chunk in data[i].split(args.L, args.L)]
     for lc in split:
         lc.period_fold()
@@ -362,10 +379,15 @@ def train_helper(param):
     test_dset = MyDataset(x, aux, label)
     test_loader = DataLoader(test_dset, batch_size=128, shuffle=False, drop_last=False, pin_memory=True)
 
+    if args.data_only:
+        output = f'data/seeds/{args.filename.split("_")[0]}_{name[-1]}'
+        joblib.dump((x, aux, label), f'{output}/test.pkl')
+        return
+
     mdl = get_network(n_classes)
     if not args.no_log:
         import wandb
-        wandb.init(project=args.project_name, config=args, name=name)
+        wandb.init(entity='photo-fm', project=args.project_name, config=args, name=name)
         wandb.watch(mdl)
     if not args.test:
         if args.retrain:
@@ -463,6 +485,10 @@ if __name__ == '__main__':
         with ctx.Pool(args.ngpu * args.njob) as p:
             results = p.map(train_helper, jobs)
         shutil.rmtree('device' + save_name+args.note)
+
+    if args.data_only:
+        exit(0)
+
     results = np.array(results)
     results_all = np.c_[lengths, results[:, 0, :].T]
     results_class = np.c_[lengths, results[:, 1, :].T]
